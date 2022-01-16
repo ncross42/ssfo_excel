@@ -13,6 +13,12 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+type Warning struct {
+	Level   string
+	Code    int
+	Message string
+}
+
 type Visitor struct {
 	CarNo  string `db:"car_no"`
 	InDate string `db:"in_date"`
@@ -149,7 +155,9 @@ func main() {
 	// var data [][]string = GetData(f)
 	var data []Visitor = GetData2(f)
 	fmt.Println(len(data))
-	fmt.Println(data)
+	if len(data) < 10 {
+		fmt.Println(data)
+	}
 
 	in_cnt := InsertData(data)
 	fmt.Println(in_cnt)
@@ -171,7 +179,7 @@ func InsertData(visitors []Visitor) int64 {
 		}
 	}()
 
-	r, err := db.NamedExec(`INSERT INTO visitor (car_no, in_date, in_time, door)
+	r, err := db.NamedExec(`INSERT IGNORE INTO visitor (car_no, in_date, in_time, door)
 		VALUES (:car_no, :in_date, :in_time, :door)`, visitors)
 	if err != nil {
 		log.Fatalln(err)
@@ -179,6 +187,21 @@ func InsertData(visitors []Visitor) int64 {
 	in_cnt, err := r.RowsAffected()
 	if err != nil {
 		log.Fatalln(err)
+	}
+
+	warn_cnt := len(visitors) - int(in_cnt)
+	fmt.Println(warn_cnt)
+	if 0 < warn_cnt {
+		// Query the database, storing results in a []Person (wrapped in []interface{})
+		warnings := []Warning{}
+		if err := db.Get(&warnings, "SHOW WARNINGS"); err != nil {
+			fmt.Println(err)
+		}
+		if warn_cnt < 10 {
+			fmt.Println(warnings)
+		} else {
+			fmt.Println("warnings cnt :", warn_cnt)
+		}
 	}
 
 	return in_cnt
