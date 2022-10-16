@@ -40,8 +40,14 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(file, uploadFile)
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, filepath)
+	file.Close()
 
 	utils.Importer(filepath)
+
+	err = os.Remove(filepath)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {

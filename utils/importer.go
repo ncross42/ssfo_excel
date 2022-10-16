@@ -127,10 +127,10 @@ func (e *Entries) LoadData(f *excelize.File) int {
 	return len(e.Data)
 }
 
-func (e *Entries) InsertData(dsn string) int64 {
+func (e *Entries) InsertData() int64 {
 
 	// use sqlx.Open() for sql.Open() semantics
-	db, err := sqlx.Connect("mysql", dsn)
+	db, err := sqlx.Connect("mysql", os.Getenv("DSN"))
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -224,9 +224,7 @@ func Importer(file_path string) {
 		return
 	}
 
-	dsn := os.Getenv("DSN")
-	fmt.Println("DSN:", dsn)
-	nInserted := entries.InsertData(dsn)
+	nInserted := entries.InsertData()
 	fmt.Println("inserted data count : ", nInserted)
 
 	fmt.Println("execution time", time.Since(start))
