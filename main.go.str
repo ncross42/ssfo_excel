@@ -1,0 +1,220 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/ncross42/ssfo_excel/utils"
+
+	"github.com/xuri/excelize/v2"
+
+	"github.com/jmoiron/sqlx"
+
+	_ "github.com/go-sql-driver/mysql"
+)
+
+type Warning struct {
+	Level   string `db:"Level"`
+	Code    string `db:"Code"`
+	Message string `db:"Message"`
+}
+
+type Visitor struct {
+	CarNo  string `db:"car_no"`
+	InDate string `db:"in_date"`
+	InTime string `db:"in_time"`
+	Door   string `db:"door"`
+}
+
+func GetHeaderFiltered2(rows *excelize.Rows) map[string]int {
+	var header_all []string
+	if !rows.Next() {
+		fmt.Println("Rows tailed to iterate in GetHeaderFiltered")
+		return nil
+	}
+	row, err := rows.Columns()
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+	header_all = append(header_all, row...)
+
+	fmt.Println(len(header_all), header_all)
+	var header_filtered map[string]int = make(map[string]int)
+	for row_no, val := range header_all {
+		switch val {
+		case "입차일자", "입차시각", "입차차량번호", "입차기기", "동", "호":
+			header_filtered[val] = row_no
+		}
+	}
+	fmt.Println(header_filtered)
+	return header_filtered
+}
+
+func ImportChunk(f *excelize.File, db *sqlx.DB, size int) int {
+	// Rows returns a rows iterator, used for streaming reading data for a worksheet with a large data
+	rows, err := f.Rows("Sheet1")
+	if err != nil {
+		fmt.Println(err)
+		return 0
+	}
+
+	var col_index map[string]int = GetHeaderFiltered2(rows)
+	// var buffer []Visitor = make([]Visitor, 0, size)
+	var buffer []string = make([]string, 0, size)
+
+	i, in_tot, max_rows := 0, 0, rows.TotalRows()-1
+	for rows.Next() {
+		row, err := rows.Columns()
+		if err != nil {
+			fmt.Println(err)
+		}
+		// fmt.Println(row)
+		// buffer = append(buffer, Visitor{
+		// 	CarNo:  row[col_index["입차차량번호"]],
+		// 	InDate: row[col_index["입차일자"]],
+		// 	InTime: row[col_index["입차시각"]],
+		// 	Door:   row[col_index["입차기기"]],
+		// })
+		buffer = append(buffer,
+			fmt.Sprintf("('%s','%s','%s','%s')",
+				row[col_index["입차차량번호"]],
+				row[col_index["입차일자"]],
+				row[col_index["입차시각"]],
+				row[col_index["입차기기"]]))
+		// fmt.Println(buffer)
+		i++
+		if (i%size) == 0 || i == max_rows {
+			fmt.Println("len_buffer :", len(buffer), i)
+			// fmt.Println(buffer)
+			in_tot += InsertChunk(db, buffer)
+			// fmt.Println(in_tot)
+			// buffer = make([]string, 0, size)
+			buffer = nil
+			// return in_tot
+		}
+	}
+	if err = rows.Close(); err != nil {
+		fmt.Println(err)
+	}
+	return in_tot
+}
+
+// func InsertChunk(db *sqlx.DB, visitors []Visitor) int {
+func InsertChunk(db *sqlx.DB, visitors []string) int {
+	sql := "INSERT IGNORE INTO visitor (car_no, in_date, in_time, door) VALUES " + strings.Join(visitors, ",")
+	// fmt.Println(sql)
+	r, err := db.Exec(sql)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	in_cnt, err := r.RowsAffected()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	warn_cnt := len(visitors) - int(in_cnt)
+	if 0 < warn_cnt {
+		fmt.Println("warnings:", len(visitors), int(in_cnt), warn_cnt)
+		var warnings []Warning // = make([]Warning, 0, 10)
+		if err := db.Select(&warnings, "SHOW WARNINGS"); err != nil {
+			fmt.Println(err)
+		}
+		if warn_cnt < 10 {
+			fmt.Println(warnings)
+		} else {
+			fmt.Println("warnings cnt :", warn_cnt)
+		}
+	}
+	return int(in_cnt)
+}
+
+func InsertChunk_bak(db *sqlx.DB, visitors []Visitor) int {
+	r, err := db.NamedExec(`INSERT IGNORE INTO visitor (car_no, in_date, in_time, door)
+		VALUES (:car_no, :in_date, :in_time, :door)`, visitors)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	in_cnt, err := r.RowsAffected()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	return int(in_cnt)
+}
+
+func main() {
+	utils.PrintMemUsage()
+
+	start := time.Now()
+
+	f, err := excelize.OpenFile("일반차량 211217 _ 220110.xlsx" /*, excelize.Options{UnzipXMLSizeLimit: 104857600}*/)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() {
+		// Close the spreadsheet.
+		if err := f.Close(); err != nil {
+			fmt.Println(err)
+		}
+	}()
+
+	// use sqlx.Open() for sql.Open() semantics
+	db, err := sqlx.Connect("mysql", "root:itsme1@(localhost:3306)/fore")
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer func() {
+		// Close the spreadsheet.
+		if err := db.Close(); err != nil {
+			fmt.Println(err)
+		}
+	}()
+
+	fmt.Println(ImportChunk(f, db, 1000))
+
+	fmt.Println("execution time", time.Since(start))
+
+	utils.PrintMemUsage()
+}
+
+func InsertData(db *sqlx.DB, visitors []Visitor) int {
+
+	in_tot, i, unit, visitors_cnt := 0, 0, 200, len(visitors)
+	for i*unit < visitors_cnt {
+		end := (i + 1) * unit
+		if (i+1)*unit > visitors_cnt {
+			end = visitors_cnt
+		}
+		r, err := db.NamedExec(`INSERT IGNORE INTO visitor (car_no, in_date, in_time, door)
+			VALUES (:car_no, :in_date, :in_time, :door)`, visitors[i*unit:end])
+		if err != nil {
+			log.Fatalln(err)
+		}
+		in_cnt, err := r.RowsAffected()
+		if err != nil {
+			log.Fatalln(err)
+		}
+		fmt.Println(i*unit, (i+1)*unit, end, in_cnt)
+		in_tot += int(in_cnt)
+		i++
+	}
+
+	warn_cnt := len(visitors) - int(in_tot)
+	fmt.Println("summary:", len(visitors), int(in_tot), warn_cnt)
+	if 0 < warn_cnt {
+		// Query the database, storing results in a []Person (wrapped in []interface{})
+		warnings := []Warning{}
+		if err := db.Get(&warnings, "SHOW WARNINGS"); err != nil {
+			fmt.Println(err)
+		}
+		if warn_cnt < 10 {
+			fmt.Println(warnings)
+		} else {
+			fmt.Println("warnings cnt :", warn_cnt)
+		}
+	}
+
+	return in_tot
+}

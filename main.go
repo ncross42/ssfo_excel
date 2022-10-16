@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"github.com/ncross42/ssfo_excel/utils"
 
@@ -14,9 +16,9 @@ import (
 )
 
 type Warning struct {
-	Level   string
-	Code    int
-	Message string
+	Level   string `db:"Level"`
+	Code    int    `db:"Code"`
+	Message string `db:"Message"`
 }
 
 type Visitor struct {
@@ -26,120 +28,172 @@ type Visitor struct {
 	Door   string `db:"door"`
 }
 
-func GetHeaderFiltered(rows *excelize.Rows) []int {
+type Guest struct {
+	CarNo  string `db:"car_no"`
+	InDate string `db:"in_date"`
+	InTime string `db:"in_time"`
+	Door   string `db:"door"`
+	Dong   string `db:"dong"`
+	Ho     string `db:"ho"`
+}
+
+type Entries struct {
+	Data        []interface{}
+	ColumnIndex map[string]int
+}
+
+func (e *Entries) SetColumnIndex(f *excelize.File) int {
+
 	var header_all []string
+	rows, err := f.Rows("Sheet1")
+	if err != nil {
+		fmt.Println(err)
+		return 0
+	}
+
 	if !rows.Next() {
 		fmt.Println("Rows tailed to iterate in GetHeaderFiltered")
-		return nil
+		return 0
 	}
 	row, err := rows.Columns()
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return 0
 	}
 	header_all = append(header_all, row...)
-
 	fmt.Println(len(header_all), header_all)
-	var header_filtered map[int]string = make(map[int]string)
-	var header_index []int
+
 	for row_no, val := range header_all {
 		switch val {
-		case "입차일자", "입차시각", "입차차량번호", "입차기기", "동", "호":
-			header_filtered[row_no] = val
-			header_index = append(header_index, row_no)
+		case "입차차량번호":
+			e.ColumnIndex["차량번호"] = row_no
+		case "입차일자", "입차시각", "차량번호", "입차기기", "동", "호":
+			e.ColumnIndex[val] = row_no
 		}
 	}
-	fmt.Println(header_index, header_filtered)
-	return header_index
+	fmt.Println(e.ColumnIndex)
+	return len(e.ColumnIndex)
 }
 
-func GetData(f *excelize.File) [][]string {
+func (e *Entries) LoadData(f *excelize.File) int {
+	fmt.Println("Start to LoadData()")
 	// Rows returns a rows iterator, used for streaming reading data for a worksheet with a large data
 	rows, err := f.Rows("Sheet1")
 	if err != nil {
+		fmt.Println("Failed to f.Rows()")
 		fmt.Println(err)
-		return nil
+		return 0
 	}
-	var col_index []int = GetHeaderFiltered(rows)
-	var data [][]string = make([][]string, rows.TotalRows()-1)
-	row_no := 0
+
+	var entry_type = len(e.ColumnIndex)
+	fmt.Println("entry_type", entry_type)
+
+	// skip header row
+	rows.Next()
+	rows.Columns()
+	// data row
 	for rows.Next() {
 		row, err := rows.Columns()
 		if err != nil {
+			fmt.Println("Failed to rows.Next()")
 			fmt.Println(err)
 		}
-		for _, col := range col_index {
-			data[row_no] = append(data[row_no], row[col])
+		if len(row) == 0 {
+			break
 		}
-		// fmt.Println(data[row_no])
-		row_no++
-	}
-	if err = rows.Close(); err != nil {
-		fmt.Println(err)
-	}
-	return data
-}
-
-func GetHeaderFiltered2(rows *excelize.Rows) map[string]int {
-	var header_all []string
-	if !rows.Next() {
-		fmt.Println("Rows tailed to iterate in GetHeaderFiltered")
-		return nil
-	}
-	row, err := rows.Columns()
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-	header_all = append(header_all, row...)
-
-	fmt.Println(len(header_all), header_all)
-	var header_filtered map[string]int = make(map[string]int)
-	for row_no, val := range header_all {
-		switch val {
-		case "입차일자", "입차시각", "입차차량번호", "입차기기", "동", "호":
-			header_filtered[val] = row_no
+		if len(row) < 4 {
+			fmt.Println("Invalid entry row :", row)
+			continue
+		}
+		switch entry_type {
+		case 4:
+			e.Data = append(e.Data, Visitor{
+				CarNo:  row[e.ColumnIndex["차량번호"]],
+				InDate: row[e.ColumnIndex["입차일자"]],
+				InTime: row[e.ColumnIndex["입차시각"]],
+				Door:   row[e.ColumnIndex["입차기기"]],
+			})
+		case 6:
+			e.Data = append(e.Data, Guest{
+				CarNo:  row[e.ColumnIndex["차량번호"]],
+				InDate: row[e.ColumnIndex["입차일자"]],
+				InTime: row[e.ColumnIndex["입차시각"]],
+				Door:   row[e.ColumnIndex["입차기기"]],
+				Dong:   row[e.ColumnIndex["동"]],
+				Ho:     row[e.ColumnIndex["호"]],
+			})
 		}
 	}
-	fmt.Println(header_filtered)
-	return header_filtered
+
+	return len(e.Data)
 }
 
-func GetData2(f *excelize.File) []Visitor {
-	// Rows returns a rows iterator, used for streaming reading data for a worksheet with a large data
-	rows, err := f.Rows("Sheet1")
+func (e *Entries) InsertData() int64 {
+
+	// use sqlx.Open() for sql.Open() semantics
+	db, err := sqlx.Connect("mysql", "root:@(localhost:3306)/fore")
 	if err != nil {
-		fmt.Println(err)
-		return nil
+		log.Fatalln(err)
 	}
-	var col_index map[string]int = GetHeaderFiltered2(rows)
-	var data []Visitor // = make([]Visitor, rows.TotalRows()-1)
-	for rows.Next() {
-		row, err := rows.Columns()
-		if err != nil {
+	defer func() {
+		// Close the spreadsheet.
+		if err := db.Close(); err != nil {
 			fmt.Println(err)
 		}
-		// for _, col := range col_index {
-		// 	data[row_no] = append(data[row_no], row[col])
-		// }
-		data = append(data, Visitor{
-			CarNo:  row[col_index["입차차량번호"]],
-			InDate: row[col_index["입차일자"]],
-			InTime: row[col_index["입차시각"]],
-			Door:   row[col_index["입차기기"]],
-		})
-		// fmt.Println(data[row_no])
+	}()
+
+	sql := ""
+	switch len(e.ColumnIndex) {
+	case 4:
+		sql = `INSERT IGNORE INTO visitor (car_no, in_date, in_time, door)
+		VALUES (:car_no, :in_date, :in_time, :door)`
+	case 6:
+		sql = `INSERT IGNORE INTO guest (car_no, in_date, in_time, door, dong, ho)
+		VALUES (:car_no, :in_date, :in_time, :door, :dong, :ho)`
 	}
-	if err = rows.Close(); err != nil {
-		fmt.Println(err)
+	r, err := db.NamedExec(sql, e.Data)
+	if err != nil {
+		log.Fatalln(err)
 	}
-	return data
+	in_cnt, err := r.RowsAffected()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	warn_cnt := len(e.Data) - int(in_cnt)
+	fmt.Println(len(e.Data), int(in_cnt), warn_cnt)
+	if 0 < warn_cnt {
+		// Query the database, storing results in a []Person (wrapped in []interface{})
+		warnings := []Warning{}
+		if err := db.Select(&warnings, "SHOW WARNINGS"); err != nil {
+			fmt.Println(err)
+		}
+		if warn_cnt < 10 {
+			fmt.Println(warnings)
+		} else {
+			fmt.Println("warnings cnt :", warn_cnt)
+		}
+	}
+
+	return in_cnt
 }
 
 func main() {
-	utils.PrintMemUsage()
 
-	f, err := excelize.OpenFile("일반차량 211217 _ 220110.xlsx" /*, excelize.Options{UnzipXMLSizeLimit: 104857600}*/)
+	if len(os.Args) != 2 {
+		fmt.Println("len", len(os.Args))
+		for _, arg := range os.Args[1:] {
+			fmt.Println(arg)
+		}
+		fmt.Println("Usage: program {type:g or v} {file_path}")
+		return
+	}
+	file_path := os.Args[1]
+
+	utils.PrintMemUsage()
+	start := time.Now()
+
+	f, err := excelize.OpenFile(file_path /*, excelize.Options{UnzipXMLSizeLimit: 104857600}*/)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -151,58 +205,23 @@ func main() {
 		}
 	}()
 
+	var entries Entries = Entries{nil, make(map[string]int)}
+	if entries.SetColumnIndex(f) == 0 {
+		fmt.Println("Failed to read header")
+		return
+	}
+	fmt.Println("ColumnIndex", entries.ColumnIndex)
+
 	// Get all the rows in the Sheet1.
-	// var data [][]string = GetData(f)
-	var data []Visitor = GetData2(f)
-	fmt.Println(len(data))
-	if len(data) < 10 {
-		fmt.Println(data)
+	var nData int = entries.LoadData(f)
+	fmt.Println("entries count : ", nData)
+	if nData < 10 {
+		fmt.Println("entries data : ", entries.Data)
 	}
 
-	in_cnt := InsertData(data)
-	fmt.Println(in_cnt)
+	nInserted := entries.InsertData()
+	fmt.Println("inserted data count : ", nInserted)
 
+	fmt.Println("execution time", time.Since(start))
 	utils.PrintMemUsage()
-}
-
-func InsertData(visitors []Visitor) int64 {
-
-	// use sqlx.Open() for sql.Open() semantics
-	db, err := sqlx.Connect("mysql", "root:itsme1@(localhost:3306)/fore")
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer func() {
-		// Close the spreadsheet.
-		if err := db.Close(); err != nil {
-			fmt.Println(err)
-		}
-	}()
-
-	r, err := db.NamedExec(`INSERT IGNORE INTO visitor (car_no, in_date, in_time, door)
-		VALUES (:car_no, :in_date, :in_time, :door)`, visitors)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	in_cnt, err := r.RowsAffected()
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	warn_cnt := len(visitors) - int(in_cnt)
-	fmt.Println(warn_cnt)
-	if 0 < warn_cnt {
-		// Query the database, storing results in a []Person (wrapped in []interface{})
-		warnings := []Warning{}
-		if err := db.Get(&warnings, "SHOW WARNINGS"); err != nil {
-			fmt.Println(err)
-		}
-		if warn_cnt < 10 {
-			fmt.Println(warnings)
-		} else {
-			fmt.Println("warnings cnt :", warn_cnt)
-		}
-	}
-
-	return in_cnt
 }
