@@ -1,0 +1,14 @@
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>xlsx 업로드</title>
+  </head>
+  <body>
+    <p><h1>xlsx 파일 전송</h1></p>
+    <form action="/upload" method="POST" accept-charset="utf-8" enctype="multipart/form-data">
+      <p>MEMO:<input type="text" id="memo" name="memo"/></p>
+	  <p><input type="file" id="xlsx_file" name="xlsx_file"/></p>
+      <p><input type="submit" name="upload"/></p>
+    </form>
+  </body>
+</html>
