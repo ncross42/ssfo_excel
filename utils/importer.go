@@ -3,8 +3,10 @@ package utils
 import (
 	"fmt"
 	"log"
+	"os"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/xuri/excelize/v2"
 
 	"github.com/jmoiron/sqlx"
@@ -125,10 +127,10 @@ func (e *Entries) LoadData(f *excelize.File) int {
 	return len(e.Data)
 }
 
-func (e *Entries) InsertData() int64 {
+func (e *Entries) InsertData(dsn string) int64 {
 
 	// use sqlx.Open() for sql.Open() semantics
-	db, err := sqlx.Connect("mysql", "root:@(localhost:3306)/fore")
+	db, err := sqlx.Connect("mysql", dsn)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -216,7 +218,15 @@ func Importer(file_path string) {
 		fmt.Println("entries data : ", entries.Data)
 	}
 
-	nInserted := entries.InsertData()
+	err = godotenv.Load(".env")
+	if err != nil {
+		fmt.Println("Failed to load .env")
+		return
+	}
+
+	dsn := os.Getenv("DSN")
+	fmt.Println("DSN:", dsn)
+	nInserted := entries.InsertData(dsn)
 	fmt.Println("inserted data count : ", nInserted)
 
 	fmt.Println("execution time", time.Since(start))
